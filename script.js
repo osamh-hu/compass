@@ -41,8 +41,9 @@ const APP = {
     _lastRawHeading: null,
 };
 
-// Mecca coordinates (Kaaba)
-const MECCA = { lat: 21.4225, lng: 39.8262 };
+// Mecca coordinates (Kaaba — exact centroid of the Ka'bah structure)
+// Source: Google Maps verified: 21.4224779, 39.8261952
+const MECCA = { lat: 21.4224779, lng: 39.8261952 };
 
 // ─── DOM CACHE ────────────────────────────────────────────────────────────────
 const D = {
@@ -663,9 +664,14 @@ function renderFrame() {
 
     // ── 6. Qibla mode overlay
     if (APP.mode === 'qibla') {
-        // Arrow should point toward Qibla relative to current device heading
+        // The qibla arrow SVG points upward (0deg = up = north).
+        // We want it to point to Mecca, so:
+        //   rotation = qiblaBearing - deviceHeading
+        // If device faces North (heading=0) and Qibla is at 270°, arrow rotates 270°.
+        // Smooth the Qibla arrow separately with its own accumulator.
         const relQibla = APP.qiblaBearing - heading;
-        D.qiblaArrowWrap.style.transform = `rotate(${relQibla}deg)`;
+        APP._smoothQiblaArrow = smoothAngle(APP._smoothQiblaArrow ?? relQibla, relQibla, 0.14);
+        D.qiblaArrowWrap.style.transform = `rotate(${APP._smoothQiblaArrow}deg)`;
     }
 
     // Request next frame if mode requires continuous update
@@ -727,7 +733,8 @@ function filterCountries(q) {
 }
 
 // ─── MODE SWITCHING ───────────────────────────────────────────────────────────
-function switchMode(mode) {
+function switchMode(mode, pushState = true) {
+    const prevMode = APP.mode;
     APP.mode = mode;
 
     D.navBtns.forEach(b => b.classList.remove('active'));
@@ -744,11 +751,23 @@ function switchMode(mode) {
         D.arOverlay.classList.remove('hidden');
         D.arLabel.textContent = t('arTarget');
         D.arCountry.textContent = APP.lang === 'ar' ? APP.targetCountry.name : APP.targetCountry.nameEn;
+        // Push state so device back button can close AR
+        if (pushState) history.pushState({ mode: 'ar' }, '', '');
     } else if (mode === 'qibla') {
         D.qiblaOverlay.classList.remove('hidden');
         D.qiblaInstruction.textContent = t('qiblaInstruction');
         if (!APP.coords) {
             D.qiblaStatus.textContent = t('qiblaStatusWait');
+        }
+        // Reset smooth qibla arrow accumulator on entry
+        APP._smoothQiblaArrow = null;
+        // Push state so device back button can close Qibla overlay
+        if (pushState) history.pushState({ mode: 'qibla' }, '', '');
+    } else {
+        // compass mode — if we navigated back via history, don't push again
+        if (pushState && (prevMode === 'qibla' || prevMode === 'ar')) {
+            // Replace state so we don't pile up compass states
+            history.replaceState({ mode: 'compass' }, '', '');
         }
     }
 }
@@ -901,7 +920,30 @@ function init() {
     D.themeToggle.addEventListener('click', toggleTheme);
     D.langToggle.addEventListener('click', toggleLang);
     D.startBtn.addEventListener('click', requestPermissions);
-    D.qiblaBackBtn.addEventListener('click', () => switchMode('compass'));
+    D.qiblaBackBtn.addEventListener('click', () => {
+        // Go back in browser history so the native back button also works
+        if (history.state && (history.state.mode === 'qibla' || history.state.mode === 'ar')) {
+            history.back();
+        } else {
+            switchMode('compass');
+        }
+    });
+
+    // Handle native back button (popstate) on phones / browser
+    window.addEventListener('popstate', (e) => {
+        const state = e.state;
+        if (!state || state.mode === 'compass') {
+            // Return to compass mode without pushing new history entry
+            switchMode('compass', false);
+        } else if (state.mode === 'qibla') {
+            switchMode('qibla', false);
+        } else if (state.mode === 'ar') {
+            switchMode('ar', false);
+        }
+    });
+
+    // Set initial history state for compass mode
+    history.replaceState({ mode: 'compass' }, '', '');
 
     D.countryBtn.addEventListener('click', e => {
         e.stopPropagation();
@@ -948,30 +990,7 @@ function init() {
     }, 1000);
 }
 
-async function sendRealDataToDatabase() {
-    console.log("محاولة إرسال البيانات...");
-
-    // جلب الزاوية والاتجاه من العناصر الموجودة في صفحتك
-    const angle = document.getElementById("heading-display")?.innerText || "0";
-    const direction = document.getElementById("bearing-dir")?.innerText || "N";
-    const location = "Yemen - Marib"; // القيمة الافتراضية كما في صورك
-
-    const formData = new FormData();
-    formData.append('angle', parseInt(angle));
-    formData.append('direction', direction);
-    formData.append('location', location);
-
-    try {
-        const response = await fetch("save.php", {
-            method: "POST",
-            body: formData
-        });
-        const result = await response.text();
-        console.log("استجابة السيرفر:", result);
-    } catch (error) {
-        console.error("خطأ في الاتصال بـ save.php:", error);
-    }
-}
+// (Data logging removed — handled server-side if needed)
 
 // ─── BOOT ─────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', init);
